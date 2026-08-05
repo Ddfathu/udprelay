@@ -10,6 +10,6 @@ WORKDIR /app
 COPY package.json server.js entrypoint.sh ./
 RUN chmod +x entrypoint.sh
 
-EXPOSE 8880
+EXPOSE 8080
 
 ENTRYPOINT ["/app/entrypoint.sh"]
