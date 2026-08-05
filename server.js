@@ -7,61 +7,62 @@ const server = net.createServer((tcpSocket) => {
   let udpSocket = null;
   let targetHost = null;
   let targetPort = null;
-  let isHandshakeDone = false;
+  let isHeaderParsed = false;
+  let accumulatedBuffer = Buffer.alloc(0);
 
   tcpSocket.on('data', (chunk) => {
-    // 1. Parsing Header 'udp:host:port|'
-    if (!isHandshakeDone) {
-      const str = chunk.toString('latin1');
-      const delimiterIndex = str.indexOf('|');
+    // Gabungkan chunk data baru ke buffer penampung
+    accumulatedBuffer = Buffer.concat([accumulatedBuffer, chunk]);
+
+    // 1. Parsing Header jika belum berhasil diparsing
+    if (!isHeaderParsed) {
+      const delimiterIndex = accumulatedBuffer.indexOf('|');
 
       if (delimiterIndex !== -1) {
-        const header = str.substring(0, delimiterIndex);
-        const payload = chunk.subarray(delimiterIndex + 1);
+        const headerStr = accumulatedBuffer.subarray(0, delimiterIndex).toString('latin1');
+        const remainingPayload = accumulatedBuffer.subarray(delimiterIndex + 1);
 
-        const parts = header.split(':');
+        const parts = headerStr.split(':');
         if (parts.length === 3 && parts[0] === 'udp') {
           targetHost = parts[1];
           targetPort = parseInt(parts[2], 10);
-          isHandshakeDone = true;
+          isHeaderParsed = true;
 
-          // Buat Socket UDP
+          // Inisialisasi Socket UDP
           udpSocket = dgram.createSocket('udp4');
 
-          // FAST-FORWARD: Tangkap balasan UDP dan TULIS LANGSUNG ke TCP
+          // Terima respon UDP dari Internet -> Kirim balik ke Worker (TCP)
           udpSocket.on('message', (msg) => {
             if (!tcpSocket.destroyed) {
               tcpSocket.write(msg);
             }
           });
 
-          udpSocket.on('error', () => {
-            cleanup();
-          });
+          udpSocket.on('error', () => cleanup());
+          udpSocket.on('close', () => cleanup());
 
-          udpSocket.on('close', () => {
-            cleanup();
-          });
-
-          // Kirim payload awal (misal kueri DNS)
-          if (payload.length > 0) {
-            udpSocket.send(payload, targetPort, targetHost);
+          // Kirim sisa payload jika ada data setelah tanda '|'
+          if (remainingPayload.length > 0) {
+            udpSocket.send(remainingPayload, targetPort, targetHost);
+            accumulatedBuffer = Buffer.alloc(0); // Kosongkan buffer
           }
         } else {
+          // Format header salah
           cleanup();
         }
       }
     } else {
-      // 2. Jika Handshake sudah beres, kirim sisa data langsung
-      if (udpSocket && chunk.length > 0) {
-        udpSocket.send(chunk, targetPort, targetHost);
+      // 2. Header sudah ter-parse, langsung kirim seluruh data berikutnya via UDP
+      if (udpSocket && accumulatedBuffer.length > 0) {
+        udpSocket.send(accumulatedBuffer, targetPort, targetHost);
+        accumulatedBuffer = Buffer.alloc(0); // Kosongkan buffer
       }
     }
   });
 
   function cleanup() {
     if (udpSocket) {
-      try { udpSocket.close(); } catch(e){}
+      try { udpSocket.close(); } catch (e) {}
       udpSocket = null;
     }
     if (!tcpSocket.destroyed) {
@@ -74,5 +75,5 @@ const server = net.createServer((tcpSocket) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[UDP RELAY FAST-LOOP] Running on port ${PORT}`);
+  console.log(`[UDP RELAY STATE-MACHINE] Ready on port ${PORT}`);
 });
